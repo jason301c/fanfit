@@ -46,6 +46,8 @@ let safetyRelease = 90.0
 /// Most RPM the fans may change per second. Slow down-ramps keep the noise from pumping.
 let rampUp = 500.0
 let rampDown = 150.0
+/// Once following the curve, keep following it until it falls this far below the fans' minimum.
+let handBackMargin = 250.0
 
 final class Controller {
     var control: Control?
@@ -88,7 +90,8 @@ final class Controller {
             next = .safety
         } else if control?.enabled != true {
             next = .paused
-        } else if curveRPM < fanMin {
+        } else if curveRPM < fanMin - (mode == .curve ? handBackMargin : 0) {
+            // The margin stops the fans flipping between FanFit and Apple where the curve crosses the minimum.
             next = .apple
         } else {
             next = .curve

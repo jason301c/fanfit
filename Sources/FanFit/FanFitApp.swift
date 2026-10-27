@@ -3,6 +3,42 @@ import FanFitCore
 import SwiftUI
 
 @main
+enum Main {
+    static func main() {
+        // `FanFit --snapshot out.png` renders the panel with live data, for the README.
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
+            MainActor.assumeIsolated { Snapshot.run(to: URL(fileURLWithPath: args[i + 1])) }
+            return
+        }
+        FanFitApp.main()
+    }
+}
+
+@MainActor
+enum Snapshot {
+    static func run(to url: URL) {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        let model = AppModel()
+        let view = NSHostingView(rootView: PanelView().environmentObject(model)
+            .background(Color(nsColor: .windowBackgroundColor)))
+        let window = NSWindow(contentRect: NSRect(x: -4000, y: -4000, width: 340, height: 600),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = view
+        window.orderFrontRegardless()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            view.setFrameSize(view.fittingSize)
+            view.layoutSubtreeIfNeeded()
+            guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { exit(1) }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: url)
+            exit(0)
+        }
+        app.run()
+    }
+}
+
 struct FanFitApp: App {
     @StateObject private var model = AppModel()
 
@@ -176,7 +212,7 @@ struct CurveChart: View {
             }
             if let s = model.status, model.daemonOnline {
                 PointMark(x: .value("°C", s.controlTemp), y: .value("RPM", s.averageRPM))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Color.primary)
                     .symbolSize(60)
             }
         }
