@@ -46,8 +46,13 @@ let safetyRelease = 90.0
 /// Most RPM the fans may change per second. Slow down-ramps keep the noise from pumping.
 let rampUp = 500.0
 let rampDown = 150.0
-/// Once following the curve, keep following it until it falls this far below the fans' minimum.
-let handBackMargin = 250.0
+/// Once following the curve, keep following it until it has sat below the fans' minimum this
+/// long. Without the hold, the fans flip between FanFit and Apple (often off) every few seconds.
+let handBackAfter: TimeInterval = 60
+/// Smoothing per second for the control temperature. It rises fast to catch real load and
+/// falls slowly, so a short CPU burst doesn't make the fans speed up and slow down.
+let smoothRise = 0.3
+let smoothFall = 0.05
 
 final class Controller {
     var control: Control?
@@ -57,6 +62,7 @@ final class Controller {
     var lastWritten: [Int: Double] = [:]
     var mode: FanMode = .paused
     var ownsFans = false
+    var belowMinSince: Date?
 
     func loadControl() {
         let attrs = try? FileManager.default.attributesOfItem(atPath: Paths.control.path)
@@ -78,7 +84,7 @@ final class Controller {
         let temps = smc.temperatures()
         var fans = smc.fans()
         let peak = Swift.max(temps.cpu ?? 0, temps.gpu ?? 0)
-        smoothed = smoothed.map { $0 + 0.3 * (peak - $0) } ?? peak
+        smoothed = smoothed.map { $0 + (peak > $0 ? smoothRise : smoothFall) * (peak - $0) } ?? peak
         let t = smoothed ?? peak
 
         let fanMin = fans.map(\.min).min() ?? 0
@@ -90,19 +96,21 @@ final class Controller {
             next = .safety
         } else if control?.enabled != true {
             next = .paused
-        } else if curveRPM < fanMin - (mode == .curve ? handBackMargin : 0) {
-            // The margin stops the fans flipping between FanFit and Apple where the curve crosses the minimum.
-            next = .apple
-        } else {
+        } else if curveRPM >= fanMin {
             next = .curve
+        } else if mode == .curve, Date().timeIntervalSince(belowMinSince ?? Date()) < handBackAfter {
+            next = .curve
+        } else {
+            next = .apple
         }
+        belowMinSince = curveRPM < fanMin ? (belowMinSince ?? Date()) : nil
         if next != mode { log("mode \(mode.rawValue) -> \(next.rawValue) at \(String(format: "%.1f", t))°C") }
 
         if next == .curve {
             // Start from the speed Apple left the fans at, so the hand-over is silent.
             let current = commanded ?? fans.map(\.actual).reduce(0, +) / Double(Swift.max(fans.count, 1))
             let step = Swift.min(Swift.max(curveRPM - current, -rampDown), rampUp)
-            let rpm = current + step
+            let rpm = Swift.max(current + step, fanMin)
             commanded = rpm
             for fan in fans {
                 let target = Swift.min(Swift.max(rpm, fan.min), fan.max)

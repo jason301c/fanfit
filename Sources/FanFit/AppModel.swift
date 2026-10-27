@@ -79,8 +79,18 @@ final class AppModel: ObservableObject {
     var fanMax: Double { status?.fans.map(\.max).max() ?? 6000 }
     var fanMin: Double { status?.fans.map(\.min).min() ?? 1300 }
 
+    private var curveCache: [Position: (key: [UUID], maxRPM: Double, day: Int, curve: Curve)] = [:]
+
+    /// The fitted curve. Cached because the panel asks for it on every redraw; a fit takes a few milliseconds.
     func curve(for p: Position) -> Curve {
-        CurveFitter.fit(base: .defaultCurve(for: p), feedback: state.feedback.filter { $0.position == p }, maxRPM: fanMax)
+        let presses = state.feedback.filter { $0.position == p }
+        let key = presses.map(\.id)
+        // Presses fade by age, so refit at least once a day.
+        let day = Int(Date().timeIntervalSince1970 / 86_400)
+        if let c = curveCache[p], c.key == key, c.maxRPM == fanMax, c.day == day { return c.curve }
+        let fitted = CurveFitter.fit(base: .defaultCurve(for: p), feedback: presses, maxRPM: fanMax)
+        curveCache[p] = (key, fanMax, day, fitted)
+        return fitted
     }
 
     func feedback(for p: Position) -> [Feedback] { state.feedback.filter { $0.position == p } }
@@ -103,9 +113,15 @@ final class AppModel: ObservableObject {
             show("Fans are already as slow as they go.")
             return
         }
+        // Presses a few seconds apart are one stronger press: replace the last one and step on from it.
+        var previous: Feedback?
+        if let last = state.feedback.last, last.kind == kind, last.position == p,
+           Date().timeIntervalSince(last.date) < 15 {
+            previous = state.feedback.removeLast()
+        }
         let before = curve(for: p).rpm(at: t)
-        let fb = Feedback.make(kind: kind, position: p, temp: t, rpm: rpm,
-                               appleRunning: status.mode != .curve, fanMin: fanMin, fanMax: fanMax)
+        let fb = Feedback.make(kind: kind, position: p, temp: t, rpm: rpm, appleRunning: status.mode != .curve,
+                               fanMin: fanMin, fanMax: fanMax, repeating: previous)
         state.feedback.append(fb)
         // Keep the newest 60 presses per position; older ones have decayed anyway.
         for pos in Position.allCases {

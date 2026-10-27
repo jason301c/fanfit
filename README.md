@@ -61,16 +61,27 @@ Each press records the temperature and fan speed at that moment, and becomes a b
 | Too loud | No faster than 20% slower minus 100 RPM |
 | Too loud while Apple runs the fans | FanFit takes over at that slower speed |
 
-The fitter changes the default curve as little as it can while meeting the bounds. It solves a small least-squares problem:
+Presses less than 15 seconds apart count as one stronger press. Each one steps on from the previous target, because the fans have not caught up yet.
+
+The fitter changes the default curve as little as it can while meeting the bounds. It solves a small convex problem over non-decreasing curves between 0 RPM and the fans' maximum:
 
 ```
-minimise  λ·|d|² + μ·|D²d|² + Σ wᵢ · (curve(Tᵢ) − targetᵢ)²
+minimise  λ·|d|² + μ·|D¹d|² + Σ wᵢ · violationᵢ²
 ```
 
-- `d` is the change from the default curve. `D²` is its second difference, which spreads a press smoothly to nearby temperatures.
+- `d` is the change from the default curve. `D¹` is its first difference, which fades a press out over about 7°C on each side. A press at 53°C leaves 40°C and 80°C alone.
 - A press counts only while the curve breaks its bound.
 - A press loses half its weight every 21 days, so newer presses win conflicts.
-- A final pass makes the curve non-decreasing.
+- Projected gradient descent (FISTA) finds the optimum. The projection is pool-adjacent-violators, then a clamp.
+
+### Default curves
+
+| °C | 45 | 50 | 55 | 60 | 65 | 70 | 75 | 80 | 85 | 90 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Lap | Apple | 2,000 | 2,800 | 3,400 | 4,000 | 4,600 | 5,200 | max | max | max |
+| Desk | Apple | Apple | Apple | 1,800 | 2,400 | 3,000 | 3,700 | 4,400 | 5,100 | max |
+
+"Apple" means Apple's controller runs the fans, which usually keeps them off. Once FanFit runs the fans, it keeps them at their minimum for 60 seconds after the curve drops below it before it hands back. The curve input rises quickly with the temperature and falls slowly, so a short CPU burst does not make the fans speed up and slow down.
 
 The code is in [`Sources/FanFitCore/Curve.swift`](Sources/FanFitCore/Curve.swift), and the tests are in [`Tests/FanFitCoreTests`](Tests/FanFitCoreTests).
 
